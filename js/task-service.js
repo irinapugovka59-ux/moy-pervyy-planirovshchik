@@ -26,7 +26,7 @@
     return group.length === 0 ? 0 : Math.max(...group.map(({ order }) => order)) + 1;
   }
 
-  function validateTaskInput(input, today = new Date()) {
+  function validateTaskInput(input, today = new Date(), options = {}) {
     const errors = {};
     const title = String(input.title ?? "").trim();
     const description = String(input.description ?? "");
@@ -41,7 +41,7 @@
     if (date) {
       const parsed = parseISODate(date);
       if (!parsed) errors.date = "Укажите корректную дату.";
-      else if (date < toISODate(today)) errors.date = "Нельзя выбрать прошедшую дату.";
+      else if (date < toISODate(today) && !options.allowPastDate) errors.date = "Нельзя выбрать прошедшую дату.";
     }
 
     if (time && !date) errors.time = "Сначала выберите дату.";
@@ -92,7 +92,7 @@
     const existing = state.tasks.find(({ id }) => id === taskId);
     if (!existing) return { state, task: null, errors: { form: "Задача не найдена." } };
 
-    const validation = validateTaskInput(input, now);
+    const validation = validateTaskInput(input, now, { allowPastDate: Boolean(existing.date && input.date === existing.date) });
     if (!validation.valid) return { state, task: existing, errors: validation.errors };
 
     const normalized = normalizeInput(input);

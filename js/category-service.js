@@ -61,6 +61,10 @@
       ...state,
       categories: state.categories.filter(({ id }) => id !== categoryId),
       tasks: state.tasks.map((task) => task.categoryId === categoryId ? { ...task, categoryId: null } : task),
+      trash: state.trash.map((task) => task.categoryId === categoryId ? { ...task, categoryId: null } : task),
+      series: state.series.map((series) => series.template.categoryId === categoryId
+        ? { ...series, template: { ...series.template, categoryId: null } }
+        : series),
     };
   }
 

@@ -9,6 +9,11 @@
     return `${EMERGENCY_KEY_PREFIX}:${now.toISOString().replaceAll(":", "-")}`;
   }
 
+  function migrateState(value) {
+    if (value?.version === root.config.SCHEMA_VERSION) return value;
+    return value;
+  }
+
   function saveState(storage, state) {
     try {
       storage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -47,7 +52,7 @@
     }
 
     try {
-      const parsed = JSON.parse(serialized);
+      const parsed = migrateState(JSON.parse(serialized));
       const validation = validateState(parsed);
       if (validation.valid) {
         return { state: parsed, warning: null, persistent: true, cause: null };
@@ -75,5 +80,5 @@
     }
   }
 
-  root.storage = Object.freeze({ loadState, saveState });
+  root.storage = Object.freeze({ loadState, migrateState, saveState });
 })();

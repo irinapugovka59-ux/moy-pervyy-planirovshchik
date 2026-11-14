@@ -25,7 +25,7 @@
     button.dataset.action = action;
     button.dataset.taskId = taskId;
     button.disabled = disabled;
-    const names = { "move-task-up": "Переместить выше", "move-task-down": "Переместить ниже", "edit-task": "Редактировать" };
+    const names = { "move-task-up": "Переместить выше", "move-task-down": "Переместить ниже", "edit-task": "Редактировать", "delete-task": "Удалить" };
     button.setAttribute("aria-label", names[action] ?? label);
     button.title = names[action] ?? label;
     return button;
@@ -33,7 +33,7 @@
 
   function createTaskCard(task, group, categories) {
     const category = categories.find(({ id }) => id === task.categoryId);
-    const card = element("article", `task-card${task.completed ? " completed" : ""}`);
+    const card = element("article", `task-card${task.completed ? " completed" : ""}${task.carryCount > 0 ? " carried" : ""}`);
     card.dataset.taskId = task.id;
     card.draggable = true;
     card.style.setProperty("--category-color", category?.color ?? "#a9d8cc");
@@ -53,12 +53,22 @@
     checkbox.setAttribute("aria-label", task.completed ? `Вернуть задачу «${task.title}» в работу` : `Выполнить задачу «${task.title}»`);
 
     const content = element("div", "task-content");
+    content.tabIndex = 0;
+    content.setAttribute("role", "button");
+    content.dataset.action = "edit-task";
+    content.dataset.taskId = task.id;
+    content.setAttribute("aria-label", `Открыть задачу «${task.title}»`);
     content.append(element("strong", "task-title", task.title));
     const meta = element("div", "task-meta");
     if (task.time) meta.append(element("span", "task-chip", task.time));
     meta.append(element("span", `task-chip priority-${task.priority}`, priorityLabels[task.priority]));
     meta.append(element("span", "task-chip", category?.name ?? "Без категории"));
-    if (task.carryCount > 0) meta.append(element("span", "task-chip", "Перенесена"));
+    if (task.carryCount > 0) {
+      const carried = element("span", "task-chip", "Перенесена");
+      carried.title = `Переносов: ${task.carryCount}${task.originalDate ? `; исходная дата: ${task.originalDate.split("-").reverse().join(".")}` : ""}`;
+      meta.append(carried);
+    }
+    if (task.seriesId) meta.append(element("span", "task-chip recurring-chip", "Повторяется"));
     content.append(meta);
     main.append(handle, checkbox, content);
 
@@ -87,6 +97,7 @@
     mainActions.append(
       moveMenu,
       actionButton("Изменить", "edit-task", task.id),
+      actionButton("Удалить", "delete-task", task.id),
     );
 
     actions.append(

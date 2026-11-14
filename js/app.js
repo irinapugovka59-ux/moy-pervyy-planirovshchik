@@ -7,6 +7,10 @@
   const { updateInboxCollapsed } = root.state;
   const { loadState, saveState } = root.storage;
   const { createTask, filterTasks, moveTaskInGroup, moveTaskToDate, reorderTask, toggleTaskCompleted, updateTask } = root.taskService;
+  const { createSeries, deleteRecurring, generateOccurrences, updateOccurrenceOnly, updateSeriesFromOccurrence } = root.recurrenceService;
+  const { runCalendarCheck } = root.calendarService;
+  const { clearTrash, deleteTask, permanentlyDeleteTask, purgeExpiredTrash, restoreTask } = root.trashService;
+  const { clearAllData, importBackup, parseBackup, serializeBackup } = root.dataService;
   const { createCategory, deleteCategory, sortCategories, updateCategory } = root.categoryService;
   const { renderTasks } = root.taskView;
 
@@ -26,7 +30,16 @@
     resetFilters: byId("reset-filters"),
     moveDialog: byId("move-dialog"), moveForm: byId("move-form"), moveDate: byId("move-date"),
     moveDateError: byId("move-date-error"), closeMoveDialog: byId("close-move-dialog"), cancelMoveDialog: byId("cancel-move-dialog"),
+    taskRecurrence: byId("task-recurrence"), taskEndMode: byId("task-end-mode"), taskEndDate: byId("task-end-date"),
+    taskEndModeField: byId("task-end-mode-field"), taskEndDateField: byId("task-end-date-field"), taskScopeField: byId("task-scope-field"),
+    dataButton: byId("data-button"), dataDialog: byId("data-dialog"), closeDataDialog: byId("close-data-dialog"),
+    exportData: byId("export-data"), chooseImportData: byId("choose-import-data"), importData: byId("import-data"), openTrash: byId("open-trash"), trashCount: byId("trash-count"), clearData: byId("clear-data"),
+    trashDialog: byId("trash-dialog"), closeTrashDialog: byId("close-trash-dialog"), doneTrash: byId("done-trash"), trashList: byId("trash-list"), emptyTrash: byId("empty-trash"),
+    deleteScopeDialog: byId("delete-scope-dialog"), deleteScopeForm: byId("delete-scope-form"), closeDeleteScope: byId("close-delete-scope"), cancelDeleteScope: byId("cancel-delete-scope"),
+    undoToast: byId("undo-toast"), undoMessage: byId("undo-message"), undoDelete: byId("undo-delete"),
+    taskServiceInfo: byId("task-service-info"),
   };
+  for (const error of document.querySelectorAll(".field-error")) error.setAttribute("aria-live", "polite");
 
   let browserStorage = null;
   try { browserStorage = globalThis.localStorage; } catch { /* handled by loadState */ }
@@ -45,6 +58,11 @@
   let draggedTaskId = null;
   let touchDrag = null;
   let highlightedDropZone = null;
+  let midnightTimer = null;
+  let deleteTaskId = null;
+  let undoState = null;
+  let undoTimer = null;
+  let importBusy = false;
   const filters = { status: "all", priorities: new Set(), categories: new Set(), carried: "all" };
 
   function showStatus(message) {
@@ -52,7 +70,8 @@
     elements.status.textContent = message ?? "";
   }
 
-  function persist(nextState) {
+  function persist(nextState, preserveUndo = false) {
+    if (!preserveUndo && undoState) hideUndo();
     const result = saveState(browserStorage ?? unavailableStorage, nextState);
     if (!result.saved) { showStatus(result.error); return false; }
     state = nextState;
@@ -97,10 +116,71 @@
   }
 
   function renderAll() {
+    const visibleThrough = toISODate(addDays(visibleWeekStart, 13));
+    const generated = generateOccurrences(state, visibleThrough, new Date());
+    if (generated !== state) persist(generated);
     renderCalendar(elements.weeks, elements.range, visibleWeekStart, new Date());
     applyInboxState();
     renderCategoryFilters();
     renderTasks(state, filterTasks(state.tasks, filters));
+    elements.trashCount.textContent = String(state.trash.length);
+    if (elements.trashDialog.open) renderTrash();
+  }
+
+  function formatStoredDate(value) {
+    if (!value) return "Без даты";
+    const date = parseISODate(value);
+    return date ? new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" }).format(date) : value;
+  }
+
+  function renderTrash() {
+    elements.trashList.replaceChildren();
+    elements.emptyTrash.disabled = state.trash.length === 0;
+    if (!state.trash.length) {
+      const empty = document.createElement("p");
+      empty.className = "list-empty";
+      empty.textContent = "Корзина пуста";
+      elements.trashList.append(empty);
+      return;
+    }
+    for (const record of [...state.trash].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))) {
+      const row = document.createElement("article"); row.className = "trash-item";
+      const content = document.createElement("div");
+      const title = document.createElement("strong"); title.className = "trash-item-title"; title.textContent = record.title;
+      const meta = document.createElement("p"); meta.className = "trash-item-meta";
+      meta.textContent = `Прежняя дата: ${formatStoredDate(record.previousDate)} · Удалена: ${new Date(record.deletedAt).toLocaleString("ru-RU")}`;
+      content.append(title, meta);
+      const actions = document.createElement("div"); actions.className = "trash-item-actions";
+      for (const [label, action, className] of [["Восстановить", "restore-trash-task", "small-button"], ["Удалить навсегда", "delete-trash-task", "task-action"]]) {
+        const button = document.createElement("button"); button.type = "button"; button.className = className; button.textContent = label;
+        button.dataset.action = action; button.dataset.taskId = record.id; actions.append(button);
+      }
+      row.append(content, actions); elements.trashList.append(row);
+    }
+  }
+
+  function hideUndo() {
+    clearTimeout(undoTimer); undoTimer = null; undoState = null; elements.undoToast.hidden = true;
+  }
+
+  function showUndo(previousState, message = "Задача перемещена в корзину") {
+    clearTimeout(undoTimer); undoState = previousState; elements.undoMessage.textContent = message; elements.undoToast.hidden = false;
+    undoTimer = setTimeout(hideUndo, 5000);
+  }
+
+  function commitDeletion(next, previousState, message) {
+    if (next === state || !persist(next, true)) return false;
+    showUndo(previousState, message);
+    renderAll();
+    return true;
+  }
+
+  function resetInterfaceAfterReplacement() {
+    visibleWeekStart = getTodayWeekStart();
+    resetFilters();
+    activeTaskId = null; moveTaskId = null; deleteTaskId = null;
+    for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
+    hideUndo();
   }
 
   function taskFormValue() {
@@ -108,6 +188,8 @@
       title: elements.taskTitle.value, description: elements.taskDescription.value,
       date: elements.taskDate.value, time: elements.taskTime.value,
       priority: elements.taskPriority.value, categoryId: elements.taskCategory.value,
+      recurrence: elements.taskRecurrence.value,
+      endDate: elements.taskEndMode.value === "date" ? elements.taskEndDate.value : "",
     };
   }
 
@@ -123,15 +205,39 @@
     if (!hasDate) elements.taskTime.value = "";
   }
 
+  function syncRecurrenceFields() {
+    const recurring = elements.taskRecurrence.value !== "none";
+    elements.taskEndModeField.hidden = !recurring;
+    elements.taskEndDateField.hidden = !recurring || elements.taskEndMode.value !== "date";
+    elements.taskEndDate.min = elements.taskDate.value || toISODate(new Date());
+    if (!recurring) {
+      elements.taskEndMode.value = "never";
+      elements.taskEndDate.value = "";
+    }
+  }
+
   function fillTaskForm(task = null, presetDate = null) {
+    const series = task?.seriesId ? state.series.find(({ id }) => id === task.seriesId) : null;
     elements.taskTitle.value = task?.title ?? "";
     elements.taskDescription.value = task?.description ?? "";
     elements.taskDate.value = task?.date ?? presetDate ?? "";
     elements.taskTime.value = task?.time ?? "";
     elements.taskPriority.value = task?.priority ?? "normal";
     renderCategoryOptions(task?.categoryId ?? "");
-    elements.taskDate.min = toISODate(new Date());
+    const today = toISODate(new Date());
+    elements.taskDate.min = task?.date && task.date < today ? task.date : today;
+    elements.taskRecurrence.value = series?.type ?? "none";
+    elements.taskEndMode.value = series?.endDate ? "date" : "never";
+    elements.taskEndDate.value = series?.endDate ?? "";
+    for (const input of elements.taskScopeField.querySelectorAll('input[name="task-scope"]')) input.checked = false;
+    elements.taskScopeField.hidden = !series;
+    const details = [];
+    if (task?.originalDate) details.push(`Исходная дата: ${formatStoredDate(task.originalDate)}`);
+    if (task?.carryCount) details.push(`Автоматических переносов: ${task.carryCount}`);
+    elements.taskServiceInfo.textContent = details.join(" · ");
+    elements.taskServiceInfo.hidden = details.length === 0;
     syncTimeAvailability();
+    syncRecurrenceFields();
     showTaskErrors();
   }
 
@@ -144,14 +250,18 @@
     fillTaskForm(task, presetDate);
     elements.taskDialogTitle.textContent = task ? "Редактирование задачи" : "Новая задача";
     elements.taskDialogKicker.textContent = task ? "Автосохранение" : (presetDate ? "Задача на дату" : "Входящие или дата");
-    elements.taskSubmit.hidden = Boolean(task);
-    elements.taskAutosave.hidden = !task;
+    const recurringEdit = Boolean(task?.seriesId);
+    elements.taskSubmit.hidden = Boolean(task) && !recurringEdit;
+    elements.taskSubmit.textContent = recurringEdit ? "Сохранить" : "Создать";
+    elements.taskAutosave.hidden = !task || recurringEdit;
     elements.taskDialog.showModal();
     elements.taskTitle.focus();
   }
 
   function autoSaveTask() {
     if (taskMode !== "edit" || !activeTaskId) return true;
+    const current = state.tasks.find(({ id }) => id === activeTaskId);
+    if (current?.seriesId) return true;
     const result = updateTask(state, activeTaskId, taskFormValue(), new Date());
     showTaskErrors(result.errors);
     if (Object.keys(result.errors).length || !persist(result.state)) return false;
@@ -167,7 +277,7 @@
 
   function closeTaskDialog() {
     clearTimeout(autosaveTimer);
-    if (taskMode === "edit") {
+    if (taskMode === "edit" && !state.tasks.find(({ id }) => id === activeTaskId)?.seriesId) {
       if (!autoSaveTask()) return;
     } else if (createFormDirty && !globalThis.confirm("Закрыть форму и потерять введённые данные?")) {
       return;
@@ -262,6 +372,46 @@
     renderAll();
   }
 
+  function resetFilters() {
+    filters.status = "all"; filters.carried = "all"; filters.priorities.clear(); filters.categories.clear();
+    elements.statusFilter.value = "all"; elements.carriedFilter.value = "all";
+    for (const input of document.querySelectorAll('[name="priority-filter"], [name="category-filter"]')) input.checked = false;
+  }
+
+  function scheduleMidnightCheck() {
+    clearTimeout(midnightTimer);
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 50);
+    midnightTimer = setTimeout(() => {
+      processCalendarDateChange(new Date());
+      scheduleMidnightCheck();
+    }, Math.max(1000, next.getTime() - now.getTime()));
+  }
+
+  function processCalendarDateChange(now = new Date(), force = false) {
+    const today = toISODate(now);
+    if (!force && state.lastCalendarCheck === today) return false;
+    const oldTodayStart = getTodayWeekStart(parseISODate(state.lastCalendarCheck) ?? now);
+    const followsToday = toISODate(visibleWeekStart) === toISODate(oldTodayStart);
+    const next = runCalendarCheck(state, now, true);
+    if (!persist(next)) return false;
+    if (followsToday) visibleWeekStart = getTodayWeekStart();
+    if (elements.taskDialog.open) {
+      if (taskMode === "edit" && activeTaskId) {
+        const task = state.tasks.find(({ id }) => id === activeTaskId);
+        if (task) {
+          const oldDate = elements.taskDate.value;
+          fillTaskForm(task);
+          if (oldDate !== task.date) showStatus("Дата открытой задачи обновлена после смены суток.");
+        }
+      } else if (elements.taskDate.value && elements.taskDate.value < today) {
+        showTaskErrors({ date: "Выбранная дата уже прошла. Укажите сегодняшнюю или будущую дату." });
+      }
+    }
+    renderAll();
+    return true;
+  }
+
   elements.previous.addEventListener("click", () => { visibleWeekStart = shiftWeekStart(visibleWeekStart, -1); renderAll(); });
   elements.next.addEventListener("click", () => { visibleWeekStart = shiftWeekStart(visibleWeekStart, 1); renderAll(); });
   elements.today.addEventListener("click", () => { visibleWeekStart = getTodayWeekStart(); renderAll(); });
@@ -280,26 +430,45 @@
   elements.taskDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeTaskDialog(); });
   elements.taskForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const result = createTask(state, taskFormValue(), new Date());
+    const value = taskFormValue();
+    let result;
+    if (taskMode === "edit" && activeTaskId) {
+      const task = state.tasks.find(({ id }) => id === activeTaskId);
+      if (!task?.seriesId) return;
+      const scope = elements.taskScopeField.querySelector('input[name="task-scope"]:checked')?.value;
+      if (!scope) { showTaskErrors({ scope: "Выберите область изменения." }); return; }
+      result = scope === "only"
+        ? updateOccurrenceOnly(state, activeTaskId, value, new Date())
+        : updateSeriesFromOccurrence(state, activeTaskId, value, toISODate(addDays(visibleWeekStart, 13)), new Date());
+    } else {
+      result = value.recurrence === "none"
+        ? createTask(state, value, new Date())
+        : createSeries(state, value, toISODate(addDays(visibleWeekStart, 13)), new Date());
+    }
     showTaskErrors(result.errors);
     if (Object.keys(result.errors).length || !persist(result.state)) return;
     elements.taskDialog.close();
+    activeTaskId = null;
     renderAll();
+    showStatus(taskMode === "edit" ? "Изменения сохранены." : "Задача создана.");
   });
   elements.taskForm.addEventListener("input", () => {
     createFormDirty = taskMode === "create";
     syncTimeAvailability();
+    syncRecurrenceFields();
     scheduleAutoSave();
   });
   elements.taskForm.addEventListener("change", () => {
     createFormDirty = taskMode === "create";
     syncTimeAvailability();
+    syncRecurrenceFields();
     if (taskMode === "edit") autoSaveTask();
   });
 
   document.addEventListener("change", (event) => {
     if (event.target.dataset.action === "toggle-task") {
-      const next = toggleTaskCompleted(state, event.target.dataset.taskId, new Date());
+      const toggled = toggleTaskCompleted(state, event.target.dataset.taskId, new Date());
+      const next = runCalendarCheck(toggled, new Date(), true);
       if (persist(next)) renderAll();
     }
     if (event.target.matches('#status-filter, #carried-filter, [name="priority-filter"], [name="category-filter"]')) updateFiltersFromControls();
@@ -309,6 +478,26 @@
     if (!button) return;
     const { action, taskId } = button.dataset;
     if (action === "edit-task") openTaskDialog(taskId);
+    if (action === "delete-task") {
+      const target = state.tasks.find(({ id }) => id === taskId);
+      if (target?.seriesId) {
+        deleteTaskId = taskId;
+        elements.deleteScopeForm.reset();
+        elements.deleteScopeDialog.showModal();
+      } else if (target) {
+        const previous = state;
+        commitDeletion(deleteTask(state, taskId, new Date()), previous, "Задача перемещена в корзину");
+      }
+    }
+    if (action === "restore-trash-task") {
+      const next = restoreTask(state, taskId, new Date());
+      if (persist(next)) { renderTrash(); renderAll(); showStatus("Задача восстановлена."); }
+    }
+    if (action === "delete-trash-task") {
+      if (!globalThis.confirm("Удалить эту задачу навсегда? Действие нельзя отменить.")) return;
+      const next = permanentlyDeleteTask(state, taskId);
+      if (persist(next)) { renderTrash(); renderAll(); }
+    }
     if (action === "move-task-up" || action === "move-task-down") {
       const next = moveTaskInGroup(state, taskId, action === "move-task-up" ? -1 : 1);
       if (next !== state && persist(next)) renderAll();
@@ -323,6 +512,11 @@
     if (task && action === "move-task-inbox") moveWithoutConfirmation(taskId, null);
     if (task && action === "move-task-today") moveWithoutConfirmation(taskId, toISODate(new Date()));
     if (task && action === "choose-task-date") openMoveDialog(taskId);
+  });
+  document.addEventListener("keydown", (event) => {
+    const target = event.target.closest('.task-content[data-action="edit-task"]');
+    if (!target || !["Enter", " "].includes(event.key)) return;
+    event.preventDefault(); openTaskDialog(target.dataset.taskId);
   });
 
   elements.moveForm.addEventListener("submit", (event) => {
@@ -442,12 +636,110 @@
   });
 
   elements.resetFilters.addEventListener("click", () => {
-    filters.status = "all"; filters.carried = "all"; filters.priorities.clear(); filters.categories.clear();
-    elements.statusFilter.value = "all"; elements.carriedFilter.value = "all";
-    for (const input of document.querySelectorAll('[name="priority-filter"]')) input.checked = false;
+    resetFilters();
     renderAll();
   });
 
+  elements.deleteScopeForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const scope = new FormData(elements.deleteScopeForm).get("delete-scope");
+    if (!scope || !deleteTaskId) return;
+    const previous = state;
+    const next = deleteRecurring(state, deleteTaskId, scope, new Date());
+    if (commitDeletion(next, previous, scope === "following" ? "Экземпляр и последующие перемещены в корзину" : "Задача перемещена в корзину")) {
+      elements.deleteScopeDialog.close(); deleteTaskId = null;
+    }
+  });
+  function closeDeleteScopeDialog() { elements.deleteScopeDialog.close(); deleteTaskId = null; }
+  elements.closeDeleteScope.addEventListener("click", closeDeleteScopeDialog);
+  elements.cancelDeleteScope.addEventListener("click", closeDeleteScopeDialog);
+  elements.deleteScopeDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeDeleteScopeDialog(); });
+
+  elements.undoDelete.addEventListener("click", () => {
+    if (!undoState) return;
+    const previous = undoState;
+    if (persist(previous)) { hideUndo(); renderAll(); showStatus("Удаление отменено."); }
+  });
+
+  elements.dataButton.addEventListener("click", () => { elements.trashCount.textContent = String(state.trash.length); elements.dataDialog.showModal(); });
+  elements.closeDataDialog.addEventListener("click", () => elements.dataDialog.close());
+  elements.dataDialog.addEventListener("cancel", (event) => { event.preventDefault(); elements.dataDialog.close(); });
+  elements.openTrash.addEventListener("click", () => { elements.dataDialog.close(); renderTrash(); elements.trashDialog.showModal(); });
+  function closeTrashDialog() { elements.trashDialog.close(); }
+  elements.closeTrashDialog.addEventListener("click", closeTrashDialog);
+  elements.doneTrash.addEventListener("click", closeTrashDialog);
+  elements.trashDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeTrashDialog(); });
+  elements.emptyTrash.addEventListener("click", () => {
+    if (!state.trash.length || !globalThis.confirm("Очистить корзину навсегда? Действие нельзя отменить.")) return;
+    if (persist(clearTrash(state))) { renderTrash(); renderAll(); }
+  });
+
+  elements.exportData.addEventListener("click", () => {
+    const result = serializeBackup(state, new Date());
+    if (result.error) { showStatus(result.error); return; }
+    const blob = new Blob([result.text], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = `planner-ira-backup-${toISODate(new Date())}.json`;
+    document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    showStatus("Резервная копия подготовлена.");
+  });
+
+  elements.chooseImportData.addEventListener("click", () => {
+    if (!importBusy) elements.importData.click();
+  });
+
+  elements.importData.addEventListener("change", async () => {
+    if (importBusy) return;
+    const file = elements.importData.files?.[0];
+    elements.importData.value = "";
+    if (!file) return;
+    importBusy = true;
+    elements.chooseImportData.disabled = true;
+    let text;
+    try { text = await file.text(); } catch { showStatus("Не удалось прочитать выбранный файл."); importBusy = false; elements.chooseImportData.disabled = false; return; }
+    const checked = parseBackup(text);
+    if (!checked.valid) { showStatus(checked.error); importBusy = false; elements.chooseImportData.disabled = false; return; }
+    const summary = checked.summary;
+    const approved = globalThis.confirm(`Импорт полностью заменит текущие данные.\nЗадач: ${summary.tasks}\nКатегорий: ${summary.categories}\nСерий: ${summary.series}\nПродолжить?`);
+    if (!approved) { importBusy = false; elements.chooseImportData.disabled = false; return; }
+    const result = importBackup(browserStorage ?? unavailableStorage, text, new Date());
+    if (!result.imported) { showStatus(result.error); importBusy = false; elements.chooseImportData.disabled = false; return; }
+    state = result.state;
+    resetInterfaceAfterReplacement();
+    const checkedState = runCalendarCheck(state, new Date(), true);
+    if (!persist(checkedState)) { importBusy = false; elements.chooseImportData.disabled = false; return; }
+    renderAll(); showStatus("Резервная копия восстановлена."); scheduleMidnightCheck();
+    importBusy = false; elements.chooseImportData.disabled = false;
+  });
+
+  elements.clearData.addEventListener("click", () => {
+    if (!globalThis.confirm("Удалить все задачи, категории, серии и корзину? Действие нельзя отменить.")) return;
+    const result = clearAllData(browserStorage ?? unavailableStorage, new Date());
+    if (!result.cleared) { showStatus(result.error); return; }
+    state = result.state; resetInterfaceAfterReplacement(); renderAll(); showStatus("Все данные очищены."); scheduleMidnightCheck();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      processCalendarDateChange(new Date());
+      scheduleMidnightCheck();
+    }
+  });
+
+  const purgedAtStartup = purgeExpiredTrash(state, new Date());
+  if (purgedAtStartup !== state) {
+    const purgeSave = saveState(browserStorage ?? unavailableStorage, purgedAtStartup);
+    if (purgeSave.saved) state = purgedAtStartup;
+    else loaded.warning = purgeSave.error;
+  }
+  const initialChecked = runCalendarCheck(state, new Date(), true);
+  if (initialChecked !== state) {
+    const saved = saveState(browserStorage ?? unavailableStorage, initialChecked);
+    if (saved.saved) state = initialChecked;
+    else loaded.warning = saved.error;
+  }
   showStatus(loaded.warning);
   renderAll();
+  scheduleMidnightCheck();
 })();

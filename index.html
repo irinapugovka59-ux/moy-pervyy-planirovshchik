@@ -33,6 +33,7 @@
             Новая задача
           </button>
           <button class="secondary-action" id="categories-button" type="button">Категории</button>
+          <button class="secondary-action" id="data-button" type="button">Данные</button>
         </div>
       </header>
 
@@ -152,7 +153,35 @@
               <span>Категория</span>
               <select id="task-category" name="categoryId"></select>
             </label>
+            <label class="field">
+              <span>Повторение</span>
+              <select id="task-recurrence" name="recurrence">
+                <option value="none">Не повторять</option>
+                <option value="monthly">Ежемесячно</option>
+                <option value="yearly">Ежегодно</option>
+              </select>
+              <small class="field-error" data-error-for="recurrence"></small>
+            </label>
+            <label class="field recurrence-field" id="task-end-mode-field" hidden>
+              <span>Окончание серии</span>
+              <select id="task-end-mode">
+                <option value="never">Без окончания</option>
+                <option value="date">По дате</option>
+              </select>
+            </label>
+            <label class="field recurrence-field" id="task-end-date-field" hidden>
+              <span>Последний экземпляр включительно</span>
+              <input id="task-end-date" type="date">
+              <small class="field-error" data-error-for="endDate"></small>
+            </label>
+            <fieldset class="scope-field field-wide" id="task-scope-field" hidden>
+              <legend>Какие задачи изменить?</legend>
+              <label><input type="radio" name="task-scope" value="only"> Только этот экземпляр</label>
+              <label><input type="radio" name="task-scope" value="following"> Этот и последующие</label>
+              <small class="field-error" data-error-for="scope"></small>
+            </fieldset>
           </div>
+          <p class="task-service-info" id="task-service-info" hidden></p>
           <p class="form-note" id="task-autosave-note" hidden>Изменения сохраняются автоматически.</p>
           <footer class="modal-footer">
             <button class="secondary-action" type="button" data-close-task>Отмена</button>
@@ -207,6 +236,69 @@
         </form>
       </dialog>
 
+      <dialog class="modal compact-modal" id="data-dialog" aria-labelledby="data-dialog-title">
+        <div class="modal-card">
+          <header class="modal-header">
+            <div>
+              <p class="section-kicker">Локальное хранение</p>
+              <h2 id="data-dialog-title">Данные и резервные копии</h2>
+            </div>
+            <button class="close-button" id="close-data-dialog" type="button" aria-label="Закрыть">×</button>
+          </header>
+          <div class="data-actions">
+            <button class="secondary-button" id="export-data" type="button">Скачать резервную копию</button>
+            <button class="secondary-button file-button" id="choose-import-data" type="button">Восстановить из файла</button>
+            <input class="visually-hidden" id="import-data" type="file" accept="application/json,.json">
+            <button class="secondary-button" id="open-trash" type="button">Корзина <span id="trash-count">0</span></button>
+            <button class="danger-button" id="clear-data" type="button">Очистить все данные</button>
+          </div>
+          <p class="data-warning">Данные хранятся только в этом браузере. Очистка данных сайта удалит их без возможности синхронизации.</p>
+        </div>
+      </dialog>
+
+      <dialog class="modal" id="trash-dialog" aria-labelledby="trash-dialog-title">
+        <div class="modal-card trash-modal-card">
+          <header class="modal-header">
+            <div>
+              <p class="section-kicker">Хранение 30 дней</p>
+              <h2 id="trash-dialog-title">Корзина</h2>
+            </div>
+            <button class="close-button" id="close-trash-dialog" type="button" aria-label="Закрыть">×</button>
+          </header>
+          <div class="trash-list" id="trash-list"></div>
+          <footer class="modal-footer">
+            <button class="danger-button" id="empty-trash" type="button">Очистить корзину</button>
+            <button class="secondary-action" id="done-trash" type="button">Готово</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <dialog class="modal compact-modal" id="delete-scope-dialog" aria-labelledby="delete-scope-title">
+        <form class="modal-card" id="delete-scope-form">
+          <header class="modal-header">
+            <div>
+              <p class="section-kicker">Повторяющаяся задача</p>
+              <h2 id="delete-scope-title">Что удалить?</h2>
+            </div>
+            <button class="close-button" id="close-delete-scope" type="button" aria-label="Закрыть">×</button>
+          </header>
+          <fieldset class="scope-field">
+            <legend>Область удаления</legend>
+            <label><input type="radio" name="delete-scope" value="only" required> Только этот экземпляр</label>
+            <label><input type="radio" name="delete-scope" value="following"> Этот и последующие</label>
+          </fieldset>
+          <footer class="modal-footer">
+            <button class="secondary-action" id="cancel-delete-scope" type="button">Отмена</button>
+            <button class="danger-button" type="submit">Переместить в корзину</button>
+          </footer>
+        </form>
+      </dialog>
+
+      <div class="undo-toast" id="undo-toast" role="status" hidden>
+        <span id="undo-message">Задача перемещена в корзину</span>
+        <button class="text-button" id="undo-delete" type="button">Отменить</button>
+      </div>
+
       <footer>
         <p id="step-note">Данные остаются только в этом браузере.</p>
       </footer>
@@ -220,6 +312,10 @@
     <script defer src="js/state.js"></script>
     <script defer src="js/storage.js"></script>
     <script defer src="js/task-service.js"></script>
+    <script defer src="js/recurrence-service.js"></script>
+    <script defer src="js/calendar-service.js"></script>
+    <script defer src="js/trash-service.js"></script>
+    <script defer src="js/data-service.js"></script>
     <script defer src="js/category-service.js"></script>
     <script defer src="js/calendar-view.js"></script>
     <script defer src="js/task-view.js"></script>

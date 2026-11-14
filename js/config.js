@@ -6,6 +6,8 @@
     APP_NAME: "Планировщик Иры",
     STORAGE_KEY: "planner-ira:state",
     EMERGENCY_KEY_PREFIX: "planner-ira:recovery",
+    BACKUP_MARKER: "planner-ira",
+    BACKUP_VERSION: 1,
     SCHEMA_VERSION: 1,
     DEFAULT_CATEGORIES: Object.freeze([
       Object.freeze({ id: "category-personal", name: "Личные", color: "#79bfb0" }),
